@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>RL Test</title>
+		
+		<style>
+			html,body {
+				margin:0;
+			}
+		</style>
+		
+		<script src="https://code.jquery.com/jquery-3.1.1.min.js"></script>
+		<script src="rl.js"></script>
+	</head>
+
+	<body>
+
+
+		<canvas id="myCanvas" width="200px" height="200px"></canvas>
+		<div id="scoreboard"></div>
+
+		<script>
+			// distance between two points
+			function lineLength(x, y, x0, y0){
+				return Math.sqrt((x -= x0) * x + (y -= y0) * y);
+			}
+			// angle between two points
+			function angleDeg(p1x, p1y, p2x, p2y) {
+				return Math.atan2(p1y - p2y, p2x - p1x) * 180 / Math.PI;
+			}
+			// angle between two angles
+			function angleDifference(x, y) {
+				return Math.atan2(Math.sin(x-y), Math.cos(x-y));
+			}
+			// get random grid coordinates
+			function getRandomCoordinates(w, h, rad) {
+				var dia = 2*rad;
+				var randX = rad + (Math.floor(Math.random() * (w/dia)) * dia);
+				var randY = rad + (Math.floor(Math.random() * (h/dia)) * dia);
+				return [randX, randY];
+			}
+			// player class
+			function player(id, room_w, room_h, x, y, radius, speed, color, ball_color, ball_radius) {
+				var me = this;
+				me.id = id;
+				me.x = x;
+				me.y = y;
+				me.init_x = x;
+				me.init_y = y;
+				me.radius = radius;
+				me.color = color;
+				me.speed = speed;
+				me.canShoot = true; // if false, that means the bullet is currently active and moving
+				me.ball_x;
+				me.ball_y;
+				me.ball_angle;
+				me.ball_speed = 5;
+				me.ball_radius = ball_radius;
+				me.ball_color = ball_color;
+				me.wins = 0;
+				// reset some key properties
+				me.reset = function() {
+					var dat = getRandomCoordinates(room_w, room_h, me.radius);
+					me.x = dat[0];
+					me.y = dat[1];
+					me.canShoot = true;
+				};
+				// shoot a bullet
+				me.shoot = function(angle) {
+					me.canShoot = false;
+					me.ball_x = me.x;
+					me.ball_y = me.y;
+					me.ball_angle = angle;
+				};
+				// move the bullet
+				me.moveBullet = function(playerList) {
+					me.ball_x += Math.round(Math.cos(me.ball_angle * Math.PI/180)*me.ball_speed);
+					me.ball_y -= Math.round(Math.sin(me.ball_angle * Math.PI/180)*me.ball_speed);
+					// wall collision
+					if (me.ball_x < 0 || me.ball_x >= room_w || me.ball_y < 0 || me.ball_y >= room_h) {
+						me.canShoot = true;
+						return;
+					}
+					// enemy collision
+					for(i=0; i<playerList.length; i+=1) {
+						var player = playerList[i];
+						// skip yourself
+						if (player.id != me.id) {
+							// if your bullet close enough to enemy
+							if (lineLength(me.ball_x, me.ball_y, player.x, player.y) <= me.ball_radius + player.radius) {
+								me.canShoot = true;
+								me.wins += 1;
+								// reset the guy who got hit
+								player.reset();
+								return;
+							}
+						}
+					}
+				};
+			}
+			// draw a box
+			function drawBox(ctx, x, y, w, h, color) {
+				ctx.fillStyle = color;
+				ctx.fillRect(x, y, w, h);
+			}
+			// draw a circle
+			function drawCircle(ctx, x, y, r, color) {
+				ctx.beginPath();
+				ctx.arc(x, y, r, 0, 2 * Math.PI, false);
+				ctx.fillStyle = color;
+				ctx.fill();
+				ctx.closePath();
+			}
+			// draw all players
+			function drawPlayers(ctx, w, h, playerList) {
+				for(var i=0; i<playerList.length; i+=1) {
+					var player = playerList[i];
+					drawCircle(ctx, player.x, player.y, player.radius, player.color);
+					// if the bullet is active and moving
+					if (!player.canShoot) {
+						player.moveBullet(playerList);
+						drawBullet(ctx, player);
+					}
+				}
+			}
+			// draw a bullet
+			function drawBullet(ctx, player) {
+				drawCircle(ctx, player.ball_x, player.ball_y, player.ball_radius, player.ball_color);
+			}
+			// run the game loop which clears canvas and draws everything
+			function gameLoop(ctx, w, h, playerList) {
+				ctx.clearRect(0, 0, w, h);
+				drawBox(ctx, 0, 0, w, h, 'green');
+				drawPlayers(ctx, w, h, playerList);
+			}
+			// set up the learning in RL
+			function setUpLearn(ctx, w, h, agent, player, enemyPlayerList) {
+				// create a vector of the game state configuration information
+				var s = [player.x, player.y, player.ball_x, player.ball_y, enemyPlayerList[0].x, enemyPlayerList[0].y, enemyPlayerList[0].ball_x, enemyPlayerList[0].ball_y];
+				// let the RL take the vector state and give you back the best action
+				var action = agent.act(s);
+				// action value gets mapped to an actual action
+				if (action==0) {
+					if (player.x < w-player.speed) player.x += player.speed;
+				} else if (action==1) {
+					if (player.x >= player.speed) player.x -= player.speed;
+				} else if (action==2) {
+					if (player.y < h-player.speed) player.y += player.speed;
+				} else if (action==3) {
+					if (player.y >= player.speed) player.y -= player.speed;
+				} else {
+					if (player.canShoot) player.shoot(angleDeg(player.x, player.y, enemyPlayerList[0].x, enemyPlayerList[0].y));
+				}
+			}
+			// create a reward function, better value means more favourable situation for the agent
+			// logic is that, is the enemy ball is coming your direction, that is a very bad situation for you
+			function getReward(w, h, player, enemyPlayerList) {
+				var maxDistance = Math.sqrt(w*w + h*h);
+				if (!enemyPlayerList[0].canShoot) {
+					var angleToEnemy = angleDeg(player.x, player.y, enemyPlayerList[0].x, enemyPlayerList[0].y);
+					var angleToEnemyBall = angleDeg(player.x, player.y, enemyPlayerList[0].ball_x, enemyPlayerList[0].ball_y);
+					var diffAngle = Math.abs(angleDifference(angleToEnemy, angleToEnemyBall));
+				
+					if (diffAngle < 10) {
+						return -1 * ((maxDistance-lineLength(player.x, player.y, enemyPlayerList[0].ball_x, enemyPlayerList[0].ball_y))/maxDistance);
+					} else {
+						return lineLength(player.x, player.y, enemyPlayerList[0].x, enemyPlayerList[0].y)/maxDistance;
+					}
+				}
+				return 1;
+			}
+
+
+			// get canvas
+			var c = document.getElementById("myCanvas");
+			var w = c.width;
+			var h = c.height;
+			var ctx = c.getContext("2d");
+			
+			// get coordinates
+			var rad = 10;
+			var dat1 = getRandomCoordinates(w, h, rad);
+			var dat2 = getRandomCoordinates(w, h, rad);
+			
+			// create my players
+			var player1 = new player(1, w, h, dat1[0], dat1[1], rad, rad*2, 'red', 'yellow', 2);
+			var player2 = new player(2, w, h, dat2[0], dat2[1], rad, rad*2, 'blue', 'lime', 2);
+			var playerList = [player1, player2];
+			
+			
+			// set up game state
+			var env = {};
+			env.getNumStates = function() { return 8; } // 8 because 8 variables in a game state
+			env.getMaxNumActions = function() { return 5; } // 5 moves, i.e. move up/down/left/right, and shoot
+			var spec = { alpha: 0.01 } // learning rate
+			
+			// create two learning agents
+			var agent1 = new RL.DQNAgent(env, spec); 
+			var agent2 = new RL.DQNAgent(env, spec); 
+			
+			setInterval(function(){
+				// get list of other players
+				var player1EnemyList = playerList.filter(function(x) {return x.id!=player1.id;});
+				var player2EnemyList = playerList.filter(function(x) {return x.id!=player2.id;});
+				// learn
+				setUpLearn(ctx, w, h, agent1, player1, player1EnemyList);
+				setUpLearn(ctx, w, h, agent2, player2, player2EnemyList);
+				// run the game loop
+				gameLoop(ctx, w, h, playerList);
+				//get the reward
+				var reward1 = getReward(w, h, player1, player1EnemyList);
+				var reward2 = getReward(w, h, player2, player2EnemyList);
+				// learn what the reward is for the given game state
+				agent1.learn(reward1); 
+				agent2.learn(reward2);
+				// log reward info
+				console.log("Player 1", "reward:", reward1);
+				console.log("Player 2", "reward:", reward2);
+				// draw score information
+				$("#scoreboard").empty();
+				for(var i=0; i<playerList.length; i+=1) {
+					var player = playerList[i];
+					$("#scoreboard").append("<div style='color:" + player.color + ";'>Wins: " + player.wins + "</div>");
+				}
+			}, 0);
+		</script>
+
+	</body>
+
+</html>
